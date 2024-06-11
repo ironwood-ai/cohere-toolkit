@@ -19,10 +19,11 @@ class CohereDeployment(BaseDeployment):
 
     client_name = "cohere-toolkit"
     api_key = get_model_config_var(COHERE_API_KEY_ENV_VAR)
+    base_url = os.getenv("CO_API_URL")
 
     def __init__(self, **kwargs: Any):
         # Override the environment variable from the request
-        self.client = cohere.Client(api_key=self.api_key, client_name=self.client_name)
+        self.client = cohere.Client(api_key=self.api_key, client_name=self.client_name, base_url=self.base_url)
 
     @property
     def rerank_enabled(self) -> bool:
@@ -33,7 +34,7 @@ class CohereDeployment(BaseDeployment):
         if not CohereDeployment.is_available():
             return []
 
-        url = "https://api.cohere.ai/v1/models"
+        url = f"https://{cls.base_url}/v1/models"
         headers = {
             "accept": "application/json",
             "authorization": f"Bearer {cls.api_key}",

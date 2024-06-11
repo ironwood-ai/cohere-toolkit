@@ -17,7 +17,7 @@ export const Logo: React.FC<LogoProps> = ({
 }) => {
   if (hasCustomLogo) {
     // Modify this section to render a custom logo or text based on specific design guidelines.
-    return <img src="/images/logo.png" alt="Logo" className={cx('h-full', className)} />;
+    return <img src="/images/logo.png" alt="Logo" style={{ width: '12%', height: 'auto' }} />;
   }
 
   return (

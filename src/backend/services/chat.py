@@ -458,6 +458,15 @@ def generate_chat_stream(
                 **event | {"search_queries": search_queries}
             )
             stream_end_data["search_queries"] = search_queries
+        elif event["event_type"] == StreamEvent.TOOL_INPUT:
+          stream_event = StreamToolInput(
+              is_finished=False,
+              # TODO: switch to diff types
+              input_type=event["input_type"],
+              tool_name=event["tool_name"],
+              input=event["input"],
+              text=event.get("text", ''),
+          )
         elif event["event_type"] == StreamEvent.TOOL_CALLS_GENERATION:
             tool_calls = []
             for tool_call in event["tool_calls"]:
@@ -496,6 +505,8 @@ def generate_chat_stream(
             stream_end_data["text"] = final_message_text
             stream_end = StreamEnd.model_validate(event | stream_end_data)
             stream_event = stream_end
+        else:
+            print(f'DEBUG: unhandled {event["event_type"]}')
 
         yield json.dumps(
             jsonable_encoder(
