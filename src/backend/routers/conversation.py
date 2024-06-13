@@ -224,6 +224,7 @@ async def upload_file(
     )
 
     upload_file = file_crud.create_file(session, upload_file)
+    print(f'upload_file {upload_file}')
 
     return upload_file
 

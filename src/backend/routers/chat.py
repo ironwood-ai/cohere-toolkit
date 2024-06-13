@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, Request
 from sse_starlette.sse import EventSourceResponse
 
 from backend.chat.custom.custom import CustomChat
+from backend.chat.custom.iw_custom import IWCustomChat
 from backend.chat.custom.langchain import LangChainChat
 from backend.config.routers import RouterName
 from backend.database_models.database import DBSessionDep
@@ -59,7 +60,7 @@ async def chat_stream(
     return EventSourceResponse(
         generate_chat_stream(
             session,
-            CustomChat().chat(
+            IWCustomChat(session=session, user_id=user_id, conversation_id=conversation_id).chat(
                 chat_request,
                 stream=True,
                 deployment_name=deployment_name,
@@ -109,7 +110,7 @@ async def chat(
         managed_tools,
         deployment_config,
     ) = process_chat(session, chat_request, request)
-
+    print("AHHHHHHHHHHHHHHHHHHH THIS IS NOT SUPPOSED TO GET CALLEDDDDD")
     return generate_chat_response(
         session,
         CustomChat().chat(

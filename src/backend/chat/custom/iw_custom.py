@@ -8,12 +8,12 @@ from typing import Optional
 
 from fastapi import HTTPException
 
-from backend.chat.collate import combine_documents
 from backend.chat.custom.utils import get_deployment
 from backend.config.tools import AVAILABLE_TOOLS, ToolName
+from backend.crud.file import get_files_by_conversation_id
 from backend.model_deployments.base import BaseDeployment
+from backend.schemas.chat import ChatMessage
 from backend.schemas.cohere_chat import CohereChatRequest
-from backend.schemas.chat import StreamToolInput
 from backend.schemas.tool import Category, Tool
 from backend.services.logger import get_logger
 
@@ -24,6 +24,10 @@ class IWCustomChat:
 
     logger = get_logger()
 
+    def __init__(self, session: 'DBSessionDep', conversation_id: str, user_id: str):
+      self.session = session
+      self.conversation_id = conversation_id
+      self.user_id = user_id
 
     def old_chunk_and_rerank(self, deployment_model, query, documents, max_chunk_size=300):
       # TODO(xjdr): This should be tokens not chars or words
@@ -82,21 +86,53 @@ class IWCustomChat:
         all_documents[query] = retriever.call(parameters)
         return all_documents
 
+    def do_search_file_call(self, tool_call):
+        all_documents = {}
+        tool = AVAILABLE_TOOLS.get(tool_call.name)
+        if tool is None:
+            return all_documents
+        search_query = tool_call.parameters.get("search_query")
+        if not search_query:
+            print('DEBUG do_search_file_call missing required parameter "filenames"')
+            return all_documents
+        file_names = tool_call.parameters.get("filenames")
+        if not file_names:
+            print('DEBUG do_search_file_call missing required parameter "filenames"')
+            return all_documents
+        call_parameters = {
+            'search_query': 'NOT USED BUT REQUIRED',
+            'filenames': file_names,
+        }
+
+        outputs = tool.implementation().call(
+            parameters=call_parameters,
+            session=self.session,
+            user_id=self.user_id,
+        )
+
+        if not outputs:
+            return all_documents
+        all_documents[search_query] = outputs
+        return all_documents
+
     def do_tool_call(self, tool_call):
+        print(f'DEBUG do_tool_call {tool_call=}')
         match tool_call.name:
-            case 'Internet Search':
+            case ToolName.Tavily_Internet_Search:
                 return self.do_search_call(tool_call)
-            case 'Python_Interpreter':
+            case ToolName.Python_Interpreter:
                 tool = AVAILABLE_TOOLS.get(tool_call.name)
+                params = tool_call.parameters
+                print(f'DEBUG PYTHON PARAMS {params}')
                 interp_out = tool.implementation().call(
-                    parameters=tool_call.parameters,
+                    parameters=params
                 )
                 print(f'DEBUG Python_Interpreter {interp_out=}')
                 return {'python_output': interp_out}
-            case 'Wikipedia':
+            case ToolName.Wiki_Retriever_LangChain:
                 return self.do_search_call(tool_call)
-            case 'search_file':
-                pass
+            case ToolName.Search_File:
+                return self.do_search_file_call(tool_call)
             case 'read_document':
                 pass
             case _:
@@ -107,31 +143,38 @@ class IWCustomChat:
             # if tool == "DIRECTLY_ANSWER" call model here and return None, stream_events, False blindly
             print(f'DEBUG: {tool_call=}')
             document_updates = self.do_tool_call(tool_call)
-            pretty_document_updates = pprint.pformat(document_updates)
-            print(f'DEBUG: {pretty_document_updates}')
+            #pretty_document_updates = pprint.pformat(document_updates)
+            #print(f'DEBUG: {pretty_document_updates}')
             if document_updates:
               #chat_request.documents.extend(combine_documents(documents=document_updates, model=deployment_model))
               #chat_request.documents = combine_documents(documents=document_updates, model=deployment_model)
                 for k,v in document_updates.items():
                     all_docs = chat_request.documents + v
-                    print(f'KJHKSJDF: {all_docs=}')
+                    #print(f'KJHKSJDF: {all_docs=}')
                     documents = self.chunk_and_rerank(deployment_model, k, all_docs)
                     #chat_request.documents.extend(documents)
-                    print(f'KJHKSJDF: {documents=}')
+                    #print(f'KJHKSJDF: {documents=}')
                     chat_request.documents = documents
         new_tool_calls = []
         filtered_events = []
         all_events = []
-        stream_events = deployment_model.invoke_chat_stream(chat_request)
+        stream_events = deployment_model.invoke_chat_stream(chat_request, debug=True)
         new_chat_request = CohereChatRequest(**chat_request.model_dump())
         prev_message = new_chat_request.message
         for event in stream_events:
             all_events.append(event)
-            if event['event_type'] == 'tool-input':
+            if event['event_type'] == 'tool-input': # TODO: kill me
                 print(f'DEBUG: TOOL INPUT {event=}')
                 prev_message += '\n\n' + event['text']
                 filtered_events.append(event)
             elif event['event_type'] == 'tool-calls-generation':
+                tool_calls = event.get('tool_calls', [])
+                if tool_calls and tool_calls[0].parameters.get('event_type', None) == 'tool-input':
+                    tool_input_event = tool_calls[0].parameters
+                    print(f'DEBUG: TOOL INPUT {tool_input_event=}')
+                    prev_message += '\n\n' + tool_input_event['text']
+                    filtered_events.append(tool_input_event)
+                    
                 print(f'DEBUG: TOOL CALL {event=}')
                 for tc in event['tool_calls']:
                     tcd = {
@@ -174,6 +217,26 @@ class IWCustomChat:
                     managed_tools.append(available_tool)
         return managed_tools
 
+    def add_initial_chat_history(self, chat_request: CohereChatRequest):
+      if not chat_request.tools:
+        return chat_request
+      tool_names = [tool.name for tool in chat_request.tools if AVAILABLE_TOOLS.get(tool.name)]
+      chat_history = chat_request.chat_history
+      if not chat_history:
+        chat_history = []
+      if ToolName.Read_File in tool_names or ToolName.Search_File in tool_names:
+        chat_history = self.add_files_to_chat_history(
+            chat_history,
+            self.conversation_id,
+            self.session,
+            self.user_id,
+        )
+        new_chat_request = chat_request.model_copy()
+        new_chat_request.chat_history = chat_history
+        return new_chat_request
+      return chat_request
+
+
     def tool_time(self, chat_request: CohereChatRequest, deployment_model: Any, stream: bool, file_paths: Optional[List[str]]) -> Any:
       # Single Turn Agent Only for Now
       max_loop = 2
@@ -183,8 +246,11 @@ class IWCustomChat:
       chat_request.tools = self.get_managed_tools(chat_request)
       tool_calls = []
       while cond and cur_loop < max_loop:
-        print("Step . step . steppin up! {cur_loop=}")
-        chat_request, tool_calls, events, cond = self.eval_step(deployment_model, chat_request, tool_calls)
+        print(f"Step . step . steppin up! {cur_loop=}")
+        new_chat_request = chat_request
+        if cur_loop == 0:
+          new_chat_request = self.add_initial_chat_history(chat_request)
+        chat_request, tool_calls, events, cond = self.eval_step(deployment_model, new_chat_request, tool_calls)
         for event in events:
           pretty_event = pprint.pformat(event)
           print(f'DEBUG: yielding filtered {pretty_event}')
@@ -204,6 +270,9 @@ class IWCustomChat:
              deployment_config: Dict[Any, Any],
              file_paths: Optional[List[str]],
              managed_tools: bool,
+             session: 'DBSessionDep',
+             conversation_id: str,
+             user_id: str,
              **kwargs: Any) -> Any:
         """
         Chat flow for custom models.
@@ -379,3 +448,30 @@ class IWCustomChat:
                 tool_results.append({"call": tool_call, "outputs": [output]})
 
         return tool_results
+
+    def add_files_to_chat_history(
+        self,
+        chat_history: List[ChatMessage],
+        conversation_id: str,
+        session: Any,
+        user_id: str,
+    ) -> List[ChatMessage]:
+        if session is None or conversation_id is None or len(conversation_id) == 0:
+            return chat_history
+
+        available_files = get_files_by_conversation_id(
+            session, conversation_id, user_id
+        )
+        files_message = "The user uploaded the following attachments:\n"
+
+        for file in available_files:
+            word_count = len(file.file_content.split())
+
+            # Use the first 25 words as the document preview in the preamble
+            num_words = min(25, word_count)
+            preview = " ".join(file.file_content.split()[:num_words])
+
+            files_message += f"Filename: {file.file_name}\nWord Count: {word_count} Preview: {preview}\n\n"
+
+        chat_history.append(ChatMessage(message=files_message, role="SYSTEM"))
+        return chat_history

@@ -33,8 +33,10 @@ class CohereDeployment(BaseDeployment):
     def list_models(cls) -> List[str]:
         if not CohereDeployment.is_available():
             return []
-
-        url = f"https://{cls.base_url}/v1/models"
+        
+        #TODO(xjdr): Fix Me
+        #url = f"{cls.base_url}/models"
+        url ='https://api.cohere.ai/v1/models'
         headers = {
             "accept": "application/json",
             "authorization": f"Bearer {cls.api_key}",
@@ -67,12 +69,17 @@ class CohereDeployment(BaseDeployment):
     def invoke_chat_stream(
         self, chat_request: CohereChatRequest, **kwargs: Any
     ) -> Generator[StreamedChatResponse, None, None]:
+        debug = kwargs.get('debug', False)
+        if 'debug' in kwargs:
+            del kwargs['debug']
         stream = self.client.chat_stream(
             **chat_request.model_dump(exclude={"stream", "file_ids"}),
             force_single_step=True,
             **kwargs,
         )
         for event in stream:
+            if debug:
+                print(f'DEBUG invoke_chat_stream {event.__dict__}')
             yield event.__dict__
 
     def invoke_search_queries(
